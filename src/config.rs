@@ -11,6 +11,19 @@ use crate::{
 };
 use chrono::{DateTime, Local};
 
+/// Which sessions `dim_when_unfocused` applies to. Parsed from the
+/// `dim_scope` config option.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DimScope {
+    /// Dim both a host that has descended into a nested child and a nested
+    /// session not currently ascended into.
+    #[default]
+    All,
+    /// Dim only a nested session not currently ascended into; leave a
+    /// descended host's own chrome at full brightness.
+    NestedOnly,
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct ZellijState {
     pub cols: usize,
@@ -35,20 +48,30 @@ pub struct ZellijState {
     /// How strongly to dim, in `render::dim_color`'s `0.0..=1.0` scale.
     /// Parsed from the `dim_strength` config option.
     pub dim_strength: f32,
+    /// Which sessions dimming applies to. Parsed from the `dim_scope`
+    /// config option.
+    pub dim_scope: DimScope,
 }
 
 impl ZellijState {
     /// The dim strength to render with right now: `0.0` (no change) unless
-    /// `dim_when_unfocused` is enabled and this session is currently the
-    /// dimmed side of a nested-session pair, a host that has descended
-    /// into a child, or a nested session not currently ascended into.
-    /// `session_ascended`/`session_dimmed` are the same fields core's own
-    /// bundled tab-bar/compact-bar plugins use for this exact purpose.
+    /// `dim_when_unfocused` is enabled, this session is currently the
+    /// dimmed side of a nested-session pair (a host that has descended
+    /// into a child, or a nested session not currently ascended into),
+    /// and `dim_scope` includes it. `session_ascended`/`session_dimmed`
+    /// are the same fields core's own bundled tab-bar/compact-bar plugins
+    /// use for this exact purpose.
     pub fn dim_amount(&self) -> f32 {
         let is_dimmed =
             self.mode.session_ascended == Some(true) || self.mode.session_dimmed == Some(true);
+        let in_scope = match self.dim_scope {
+            DimScope::All => true,
+            // `session_ancestry` is only non-empty for a nested session,
+            // so this excludes a host that has merely descended.
+            DimScope::NestedOnly => !self.mode.session_ancestry.is_empty(),
+        };
 
-        if self.dim_when_unfocused && is_dimmed {
+        if self.dim_when_unfocused && is_dimmed && in_scope {
             self.dim_strength
         } else {
             0.0
@@ -610,6 +633,8 @@ mod test {
     fn state_with(
         dim_when_unfocused: bool,
         dim_strength: f32,
+        dim_scope: DimScope,
+        session_ancestry: Vec<String>,
         session_ascended: Option<bool>,
         session_dimmed: Option<bool>,
     ) -> ZellijState {
@@ -617,36 +642,73 @@ mod test {
             mode: ModeInfo {
                 session_ascended,
                 session_dimmed,
+                session_ancestry,
                 ..Default::default()
             },
             dim_when_unfocused,
             dim_strength,
+            dim_scope,
             ..Default::default()
         }
     }
 
     #[test]
     fn test_dim_amount_when_not_dimmed() {
-        let state = state_with(true, 0.5, Some(false), None);
+        let state = state_with(true, 0.5, DimScope::All, vec![], Some(false), None);
         assert_eq!(state.dim_amount(), 0.0);
     }
 
     #[test]
     fn test_dim_amount_when_session_ascended() {
-        let state = state_with(true, 0.5, Some(true), None);
+        let state = state_with(
+            true,
+            0.5,
+            DimScope::All,
+            vec!["main".to_owned()],
+            Some(true),
+            None,
+        );
         assert_eq!(state.dim_amount(), 0.5);
     }
 
     #[test]
     fn test_dim_amount_when_session_dimmed() {
-        let state = state_with(true, 0.7, None, Some(true));
+        let state = state_with(true, 0.7, DimScope::All, vec![], None, Some(true));
         assert_eq!(state.dim_amount(), 0.7);
     }
 
     #[test]
     fn test_dim_amount_respects_config_toggle() {
         // Dimmed by the session, but the user has turned the feature off.
-        let state = state_with(false, 0.5, Some(true), Some(true));
+        let state = state_with(
+            false,
+            0.5,
+            DimScope::All,
+            vec!["main".to_owned()],
+            Some(true),
+            Some(true),
+        );
+        assert_eq!(state.dim_amount(), 0.0);
+    }
+
+    #[test]
+    fn test_dim_amount_nested_only_dims_nested_session() {
+        let state = state_with(
+            true,
+            0.5,
+            DimScope::NestedOnly,
+            vec!["main".to_owned()],
+            Some(true),
+            None,
+        );
+        assert_eq!(state.dim_amount(), 0.5);
+    }
+
+    #[test]
+    fn test_dim_amount_nested_only_ignores_descended_host() {
+        // A host that has descended has no ancestry of its own, so
+        // NestedOnly should leave its chrome at full brightness.
+        let state = state_with(true, 0.5, DimScope::NestedOnly, vec![], None, Some(true));
         assert_eq!(state.dim_amount(), 0.0);
     }
 }

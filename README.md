@@ -191,6 +191,10 @@ This fork adds dimming and host/nested role awareness for Zellij 0.45's
   dim. `0.0` leaves colors unchanged, `1.0` blends them fully to neutral
   gray. Only true RGB colors can be dimmed this way; named ANSI and
   256-color palette entries render unchanged.
+- `dim_scope` (default `all`): which side of a nested-session pair
+  `dim_when_unfocused` applies to. `all` dims both a descended host and an
+  unascended nested session; `nested` leaves a descended host's own chrome
+  at full brightness and only dims nested sessions.
 - `only_when=host` / `only_when=nested`: a per-segment attribute, set
   alongside `fg=`/`bg=` inside a `#[...]` prefix in `format_left`,
   `format_center`, or `format_right`, that renders that segment only for a
@@ -198,7 +202,9 @@ This fork adds dimming and host/nested role awareness for Zellij 0.45's
   always renders. This lets one shared layout serve both roles instead of
   maintaining two. It is not evaluated inside a widget's own per-item
   format (`tab_normal`, `notification_format_unread`, and similar), only in
-  the three top-level format strings.
+  the three top-level format strings. A nested session that is currently
+  fullscreen within its host (covering the host's entire screen) counts as
+  a host for this check, since visually it is indistinguishable from one.
 
 ```javascript
 format_left   "{mode} #[fg=#89B4FA,bold]{session}"
@@ -206,6 +212,7 @@ format_right  "#[only_when=host]{command_weather} #[only_when=host]{datetime} #[
 
 dim_when_unfocused "true"
 dim_strength       "0.5"
+dim_scope          "all"
 ```
 
 The empty `#[]` before `{command_resources}` matters: without it, that

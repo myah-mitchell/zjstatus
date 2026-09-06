@@ -222,12 +222,18 @@ impl FormattedPart {
     /// Whether this part should render at all given the session's current
     /// host/nested role. A part with no `only_when` attribute always
     /// matches; `session_ancestry` being non-empty means this session is
-    /// nested inside another one.
+    /// nested inside another one. A nested session whose pane currently
+    /// fills its host's entire screen (`host_fullscreen`) is treated as a
+    /// host too: it covers the whole outer session, so it renders the
+    /// same as a standalone one rather than showing nested-only chrome.
     fn role_matches(&self, state: &ZellijState) -> bool {
+        let is_host =
+            state.mode.session_ancestry.is_empty() || state.mode.host_fullscreen == Some(true);
+
         match self.only_when {
             None => true,
-            Some(Role::Host) => state.mode.session_ancestry.is_empty(),
-            Some(Role::Nested) => !state.mode.session_ancestry.is_empty(),
+            Some(Role::Host) => is_host,
+            Some(Role::Nested) => !is_host,
         }
     }
 
@@ -587,5 +593,24 @@ mod test {
 
         assert!(unconditional_part.role_matches(&host_state));
         assert!(unconditional_part.role_matches(&nested_state));
+    }
+
+    #[test]
+    fn test_role_matches_treats_fullscreen_nested_session_as_host() {
+        let host_part = FormattedPart {
+            only_when: Some(Role::Host),
+            ..Default::default()
+        };
+        let nested_part = FormattedPart {
+            only_when: Some(Role::Nested),
+            ..Default::default()
+        };
+
+        let mut fullscreen_nested_state = ZellijState::default();
+        fullscreen_nested_state.mode.session_ancestry = vec!["outer".to_owned()];
+        fullscreen_nested_state.mode.host_fullscreen = Some(true);
+
+        assert!(host_part.role_matches(&fullscreen_nested_state));
+        assert!(!nested_part.role_matches(&fullscreen_nested_state));
     }
 }
