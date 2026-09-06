@@ -33,25 +33,53 @@ upstream/main ──▶ main ──┬──▶ work branch ──▶ PR to dj95
 
 ## Syncing from upstream
 
-Upstream is a second remote, added once per clone:
+`.github/workflows/sync-upstream.yml` runs daily at 06:00 UTC, and on demand
+from the Actions tab. It fast-forwards `main` to `upstream/main` and mirrors any
+new upstream tags. If the fast-forward is not possible, it fails rather than
+forcing: that means something has been committed to `main` that upstream does
+not have, which should be moved to `main-local` so `main` can be reset to
+`upstream/main`.
+
+`main-local` is deliberately left alone by that job. Merging `main` into it is
+the one step that can conflict, exactly when upstream lands a change the fork
+already carries, and that is a decision to make rather than something to
+discover from a failed overnight run. Each run's summary says whether
+`main-local` has fallen behind, and the merge is a two-line job:
+
+```sh
+git switch main-local && git fetch origin
+git merge origin/main
+```
+
+The scheduled trigger is also why `main-local` is this fork's default branch:
+GitHub only runs `schedule` workflows from the default branch, and the sync
+workflow is a fork-only file that must never land on `main`.
+
+To sync by hand, upstream is a second remote, added once per clone:
 
 ```sh
 git remote add upstream https://github.com/dj95/zjstatus.git
+git fetch upstream
+git switch main && git merge --ff-only upstream/main
 ```
 
-`main` only ever fast-forwards:
+### Where upstream's tags live
+
+Upstream's tags are mirrored to `refs/upstream-tags/*`, not `refs/tags/*`. They
+are kept because `git-cliff` needs a previous tag to measure a release's notes
+against, and hiding them from `refs/tags/` buys two things: this fork's tag list
+shows its own releases rather than 43 of upstream's, and no `v*.*.*` tag ever
+exists here for the inherited `release.yml` to fire on.
+
+They are invisible to a normal `git fetch`. To read them:
 
 ```sh
-git fetch upstream
-git switch main
-git merge --ff-only upstream/main
-git switch main-local
-git merge main
+git ls-remote origin | grep refs/upstream-tags/     # list them
+git fetch origin "+refs/upstream-tags/*:refs/tags/*"  # fetch as local tags
 ```
 
-If `merge --ff-only` fails, something has been committed to `main` that
-upstream does not have. Move that commit to `main-local` and reset `main` to
-`upstream/main`, rather than keeping the divergence.
+The release workflow does that fetch itself before generating a changelog, so
+nothing needs doing by hand for a release.
 
 ### When upstream lands something the fork already has
 
@@ -113,6 +141,11 @@ on `v*.*.*` tags. A tag named `v0.25.1` would therefore start two release runs
 competing to publish the same tag. The `fork-v` prefix matches only the local
 release workflow's filter, which leaves upstream's file untouched and free to
 merge cleanly on every sync.
+
+Mirroring upstream's tags out of `refs/tags/` means no `v*.*.*` tag is expected
+to exist on this fork at all, so the prefix is now the second of two defences
+rather than the only one. It still matters: it is what makes tagging one by hand
+harmless.
 
 Upstream's `lint.yml` still runs, since its bare `on: push` fires for tags as
 well as branches. Its clippy and test jobs duplicate some of the release

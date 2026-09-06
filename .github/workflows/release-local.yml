@@ -93,6 +93,13 @@ jobs:
             exit 1
           fi
 
+      # Upstream's tags live under refs/upstream-tags/, where sync-upstream.yml
+      # puts them to keep the fork's tag list to fork releases alone. The
+      # checkout above fetches refs/tags/ only, so without this git-cliff would
+      # see no tag before this one and scope the notes to all of history.
+      - name: Restore upstream tags for the changelog
+        run: git fetch --quiet origin "+refs/upstream-tags/*:refs/tags/*"
+
       - name: Install WASI SDK
         run: |
           wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-linux.tar.gz
