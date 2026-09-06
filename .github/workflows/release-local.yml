@@ -120,7 +120,10 @@ jobs:
         uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # v3
         id: git-cliff
         with:
-          config: cliff.toml
+          # The fork's own config, not upstream's cliff.toml. A copy of it
+          # differing only in that the section headings are plain words, kept
+          # separate so upstream's file stays byte-identical and merges cleanly.
+          config: cliff-fork.toml
           # Pinned so that bumping the action's SHA cannot quietly change which
           # commits a release's notes cover.
           version: "v2.13.1"
