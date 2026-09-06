@@ -97,6 +97,25 @@ impl ZellijPlugin for State {
         self.got_permissions = false;
         let uid = Uuid::new_v4();
 
+        // Read directly from `configuration` rather than going through
+        // `ModuleConfig`: these two live on `ZellijState`, not
+        // `ModuleConfig`, so every render-time call site that already has a
+        // `&ZellijState` (nearly everything, since it's the shared render
+        // context) can dim without also needing the module config threaded
+        // in. See `ZellijState::dim_amount`.
+        let dim_when_unfocused = match self.userspace_configuration.get("dim_when_unfocused") {
+            Some(toggle) => toggle == "true",
+            None => true,
+        };
+        // Clamped: dim_color's blend overshoots past neutral gray above
+        // 1.0, and inverts the blend direction below 0.0.
+        let dim_strength = self
+            .userspace_configuration
+            .get("dim_strength")
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.5)
+            .clamp(0.0, 1.0);
+
         self.state = ZellijState {
             cols: 0,
             command_results: BTreeMap::new(),
@@ -111,6 +130,8 @@ impl ZellijPlugin for State {
             incoming_notification: None,
             focused_pane_id: None,
             focused_pane_cwd: None,
+            dim_when_unfocused,
+            dim_strength,
         };
     }
 
