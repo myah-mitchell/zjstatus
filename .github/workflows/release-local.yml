@@ -12,9 +12,6 @@ on:
     tags:
       - "fork-v*"
 
-permissions:
-  contents: write # create the release
-
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -22,9 +19,17 @@ env:
 jobs:
   # A fork build that fails its tests is worse than no build, since it gets
   # installed unattended from the release page. The release job waits on this.
+  #
+  # `lint.yml` also runs on a tag push and covers the same ground, but a
+  # separate workflow cannot gate this one. Tests that decide whether a release
+  # is published have to run inside it.
   test:
     name: test
     runs-on: ubuntu-latest
+    # Compiling dependencies and running tests never needs to write to the
+    # repository. Only the release job below gets a token that can.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
 
@@ -39,30 +44,52 @@ jobs:
       - name: Install cargo-nextest
         run: cargo install --locked cargo-nextest
 
+      # `--bins` matters here rather than in lint.yml: this run gates
+      # publication, and src/bin/zjstatus.rs carries tests of plugin state that
+      # ships inside zjstatus.wasm.
       - name: Run tests
-        run: cargo nextest run --lib
+        run: cargo nextest run --lib --bins
 
   release:
     name: release
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+    env:
+      WASI_SDK_PATH: /opt/wasi-sdk
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
         with:
-          fetch-depth: 0 # git-cliff needs history to build a changelog
-          fetch-tags: true
+          # Fetches every branch and tag, which git-cliff needs for the
+          # changelog and the step below needs to resolve origin/main*.
+          fetch-depth: 0
 
-      # A `fork-v` tag on a commit that is not on `main-local` would publish
-      # something that is not a fork build at all, most likely untouched
-      # upstream code. Catch that before anything is built or published.
-      - name: Verify the tag is on main-local
+      # The release notes claim this artifact is a fork build. Two ways to tag
+      # something that is not: a commit that never reached main-local (an
+      # unmerged work branch, or main-local not yet pushed), or a commit on
+      # main, which is a pure mirror of upstream and carries no fork work at
+      # all. Reject both before anything is built or published.
+      - name: Verify the tag carries fork work
         run: |
           set -euo pipefail
-          git fetch --no-tags origin \
-            +refs/heads/main-local:refs/remotes/origin/main-local
+          tag="${GITHUB_REF#refs/tags/}"
+
+          for ref in origin/main origin/main-local; do
+            git rev-parse --verify --quiet "refs/remotes/${ref}" >/dev/null || {
+              echo "::error::${ref} is missing from this checkout, so ${tag} cannot be verified."
+              exit 1
+            }
+          done
+
           if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main-local; then
-            echo "::error::${GITHUB_REF#refs/tags/} points at ${GITHUB_SHA}, which is not on origin/main-local. Push main-local first, then push the tag."
+            echo "::error::${tag} points at ${GITHUB_SHA}, which is not on origin/main-local. Push main-local first, then push the tag."
+            exit 1
+          fi
+
+          if git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::${tag} points at ${GITHUB_SHA}, which is on main and so carries no fork work. Tag a commit on main-local instead."
             exit 1
           fi
 
@@ -71,18 +98,12 @@ jobs:
           wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-linux.tar.gz
           tar -xzf wasi-sdk-20.0-linux.tar.gz
           mv wasi-sdk-20.0 /opt/wasi-sdk
-        env:
-          WASI_SDK_PATH: /opt/wasi-sdk
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4f647fc679bcd3b11499ccb42104547c83dabe96 # stable
         with:
-          profile: minimal
-          override: true
           toolchain: "1.95.0"
           target: wasm32-wasip1
-        env:
-          WASI_SDK_PATH: /opt/wasi-sdk
 
       # The target comes from .cargo/config.toml, which pins wasm32-wasip1.
       - name: Build release binaries
@@ -93,11 +114,8 @@ jobs:
         id: git-cliff
         with:
           config: cliff.toml
-          # git-cliff 2.10.1, the action's default, walks only the first-parent
-          # chain for `--latest`. Work branches land on main-local as merge
-          # commits, which puts their real feat/fix commits on a second parent,
-          # so that version would describe a fork build as nothing but the merge
-          # itself. Later versions read the full history.
+          # Pinned so that bumping the action's SHA cannot quietly change which
+          # commits a release's notes cover.
           version: "v2.13.1"
           args: -vv --latest --strip header
         env:
@@ -133,7 +151,6 @@ jobs:
           # release page.
           draft: false
           prerelease: false
-          make_latest: true
           files: |
             ./target/wasm32-wasip1/release/zjstatus.wasm
             ./target/wasm32-wasip1/release/zjframes.wasm
