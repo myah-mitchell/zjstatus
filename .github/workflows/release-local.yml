@@ -1,0 +1,139 @@
+---
+# Publishes fork builds from `main-local`, the branch that carries this fork's
+# own work on top of upstream. See LOCAL-RELEASES.md for the branch model.
+#
+# The tag prefix is what keeps this separate from upstream's release.yml, which
+# this branch also carries and which fires on `v*.*.*`. A `fork-v0.25.1` tag
+# matches only the filter below, so cutting a fork build never starts an
+# upstream release run alongside it.
+name: Local Release
+on:
+  push:
+    tags:
+      - "fork-v*"
+
+permissions:
+  contents: write # create the release
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # A fork build that fails its tests is worse than no build, since it gets
+  # installed unattended from the release page. The release job waits on this.
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+
+      - uses: jcbhmr/setup-wasmtime@960c367a99921eb0b02f5778fce9ae8f110bf0f0 # v2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4f647fc679bcd3b11499ccb42104547c83dabe96 # stable
+        with:
+          toolchain: "1.95.0"
+          target: wasm32-wasip1
+
+      - name: Install cargo-nextest
+        run: cargo install --locked cargo-nextest
+
+      - name: Run tests
+        run: cargo nextest run --lib
+
+  release:
+    name: release
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+        with:
+          fetch-depth: 0 # git-cliff needs history to build a changelog
+          fetch-tags: true
+
+      # A `fork-v` tag on a commit that is not on `main-local` would publish
+      # something that is not a fork build at all, most likely untouched
+      # upstream code. Catch that before anything is built or published.
+      - name: Verify the tag is on main-local
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            +refs/heads/main-local:refs/remotes/origin/main-local
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main-local; then
+            echo "::error::${GITHUB_REF#refs/tags/} points at ${GITHUB_SHA}, which is not on origin/main-local. Push main-local first, then push the tag."
+            exit 1
+          fi
+
+      - name: Install WASI SDK
+        run: |
+          wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-linux.tar.gz
+          tar -xzf wasi-sdk-20.0-linux.tar.gz
+          mv wasi-sdk-20.0 /opt/wasi-sdk
+        env:
+          WASI_SDK_PATH: /opt/wasi-sdk
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4f647fc679bcd3b11499ccb42104547c83dabe96 # stable
+        with:
+          profile: minimal
+          override: true
+          toolchain: "1.95.0"
+          target: wasm32-wasip1
+        env:
+          WASI_SDK_PATH: /opt/wasi-sdk
+
+      # The target comes from .cargo/config.toml, which pins wasm32-wasip1.
+      - name: Build release binaries
+        run: cargo build --release
+
+      - name: Generate a changelog
+        uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # v3
+        id: git-cliff
+        with:
+          config: cliff.toml
+          # git-cliff 2.10.1, the action's default, walks only the first-parent
+          # chain for `--latest`. Work branches land on main-local as merge
+          # commits, which puts their real feat/fix commits on a second parent,
+          # so that version would describe a fork build as nothing but the merge
+          # itself. Later versions read the full history.
+          version: "v2.13.1"
+          args: -vv --latest --strip header
+        env:
+          OUTPUT: CHANGES.md
+
+      # The release page is the only place a reader sees these artifacts, so it
+      # has to say plainly whose build this is and exactly what went into it.
+      - name: Compose release notes
+        run: |
+          set -euo pipefail
+          {
+            echo "Fork build from \`main-local\`. Not an upstream zjstatus release."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tag | \`${GITHUB_REF#refs/tags/}\` |"
+            echo "| Commit | \`$(git rev-parse --short HEAD)\` |"
+            echo "| Built | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+            echo
+            cat CHANGES.md
+          } > RELEASE_NOTES.md
+
+      - name: Create release
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          # Published rather than draft: pushing the tag is meant to be the last
+          # manual step, and these builds are installed straight from the
+          # release page.
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: |
+            ./target/wasm32-wasip1/release/zjstatus.wasm
+            ./target/wasm32-wasip1/release/zjframes.wasm
