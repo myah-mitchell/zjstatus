@@ -1,0 +1,32 @@
+# What this fork builds and releases. Each [build.<name>] table is one series
+# of releases. Pushing a change to this file builds every table that changed,
+# and publishes it: editing it is how a release is cut.
+#
+#   tag         The release's tag. A fixed prefix, then any of:
+#                 {upstream}  the version in the base's Cargo.toml
+#                 {version}   this table's `version`
+#                 {date}      the build date as yymmdd, UTC
+#               A tag that already exists is an error, except that a {date}
+#               tag gets a .2, .3 and so on for a second build the same day.
+#   base        What the build starts from.
+#   stack       Merged onto the base in order. Empty means the base as it is.
+#   version     Filled into {version}. Bumping it cuts the next release.
+#   prerelease  Marks the release as a prerelease. Defaults to false.
+#   publish     false makes the build test and compile but never release.
+#
+# A ref in base or stack is one of:
+#   upstream:main        a branch of dj95/zjstatus
+#   upstream:pull/280    an upstream pull request, as its author last pushed it
+#   feat/x               a branch of this fork (or origin:feat/x)
+#
+# Each prefix (the part before the first {) names one series, and release notes
+# cover what changed since the previous release with the same prefix. Do not
+# let one build's prefix start with another's.
+
+# This fork's own release. fork-v0.25.1 was the last one cut from main-local,
+# before this file existed; bump version to release the stack below.
+[build.fork]
+tag = "fork-v{version}"
+version = "0.25.1"
+base = "upstream:main"
+stack = ["feat/nested-session-status-bar"]
